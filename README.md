@@ -76,17 +76,18 @@ Clipdozer is migrating toward a layered package structure under `app/` to keep g
 app/
 	core/        # Domain models & core timeline logic (ranges, formatting, orchestration)
 	ui/          # Qt widgets & windows (MainWindow, dialogs, future editor panels)
+		components/  # Reusable UI components (buttons, sliders, etc.)
+	        timeline/timeline.py  # Backwards-compat shim; original TimelineWidget kept during transition
 	services/    # Long-running or async tasks (captioning via Whisper, import/export, render jobs)
 	media/       # Abstractions around MoviePy / ffmpeg (decoding, waveform extraction, clip wrappers)
 	utils/       # Small shared helpers (time formatting, threading utilities)
-	timeline.py  # Backwards-compat shim; original TimelineWidget kept during transition
 ```
 
 Current state:
-* `TimelineWidget` still resides in `app.timeline` and is re-exported from `app.core.timeline` for forwards migration.
+* `TimelineWidget` still resides in `app.ui.components.timeline` and is re-exported from `app.core.timeline` for forwards migration.
 * New code should prefer `from app.core.timeline import TimelineWidget`.
 * Tests continue using the legacy path to avoid churn until logic/widget separation is complete.
-* `format_time` moved to `app.utils.timefmt` (legacy import still works through `app.timeline`).
+* `format_time` moved to `app.utils.timefmt` (legacy import still works through `app.ui.components.timeline`).
 * Thumbnail and waveform workers extracted to `app.services.media_generation` reducing widget coupling.
 * NEW: `VideoPlaybackController` & `VideoPreviewWidget` (in `app.media.playback`) encapsulate playback. `MainWindow` now uses this abstraction instead of inline timers.
 

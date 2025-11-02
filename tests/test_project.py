@@ -24,5 +24,6 @@ def test_project_serialization(tmp_path):
     assert loaded.name == p.name
     assert len(loaded.clips) == 1
     assert loaded.clips[0].in_point == 0.5
+    # structure stability
     d = loaded.to_dict()
     assert "clips" in d and isinstance(d["clips"], list)

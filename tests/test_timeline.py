@@ -1,6 +1,7 @@
 from app.timeline import format_time, TimelineWidget
 from PySide6.QtWidgets import QApplication
 
+
 _app = None
 
 

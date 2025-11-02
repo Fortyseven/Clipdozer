@@ -12,5 +12,6 @@ def test_clip_adapter_basic(tmp_path):
     frame = adapter.get_frame(0.1)
     assert frame.shape[0] == 32 and frame.shape[1] == 32
     audio = adapter.audio_array()
-    assert audio is None  # ColorClip has no audio
+    # ColorClip has no audio; expect None
+    assert audio is None
     adapter.clip.close()
