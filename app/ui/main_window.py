@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QAction, QShortcut, QKeySequence
 from PySide6.QtCore import QUrl
+from PySide6.QtGui import QGuiApplication
+import os
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 try:
@@ -44,6 +46,38 @@ class MainWindow(QMainWindow):
         self._createMenuBar()
         self._createEditorLayout()
         self._initAudio()
+        # Defer centering until window has geometry (will also be called in run())
+
+    def centerOnPreferredScreen(self):
+        """Center the window on the selected screen.
+
+        Selection priority:
+        1. Environment variable CLIPDOZER_SCREEN_INDEX if valid.
+        2. Primary screen.
+        """
+        try:
+            screens = QGuiApplication.screens()
+            if not screens:
+                return
+            idx_env = os.getenv("CLIPDOZER_SCREEN_INDEX")
+            screen = None
+            if idx_env is not None:
+                try:
+                    idx = int(idx_env)
+                    if 0 <= idx < len(screens):
+                        screen = screens[idx]
+                except Exception:
+                    screen = None
+            if screen is None:
+                screen = QGuiApplication.primaryScreen() or screens[0]
+            if screen is None:
+                return
+            geo = screen.availableGeometry()
+            win_geo = self.frameGeometry()
+            win_geo.moveCenter(geo.center())
+            self.move(win_geo.topLeft())
+        except Exception:
+            pass
 
     def _createMenuBar(self):
         menu_bar = self.menuBar()
@@ -299,6 +333,7 @@ def run():  # convenience launcher
     window = MainWindow()
     window._ensureFFmpeg()
     window.show()
+    window.centerOnPreferredScreen()
     sys.exit(app.exec())
 
 
