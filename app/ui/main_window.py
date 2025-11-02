@@ -18,9 +18,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QFileDialog,
     QStatusBar,
+    QSplitter,
+    QLabel,
 )
-from PySide6.QtGui import QAction, QShortcut, QKeySequence
-from PySide6.QtCore import QUrl
+from PySide6.QtGui import QAction
+from PySide6.QtCore import QUrl, Qt
 from PySide6.QtGui import QGuiApplication
 import os
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -36,6 +38,17 @@ except ImportError:  # pragma: no cover
 
 
 from ..media.playback import VideoPlaybackController, VideoPreviewWidget
+
+
+class ProjectPreviewWidget(VideoPreviewWidget):
+    """Second preview representing the composed project (timeline output).
+
+    Currently mirrors selected clip playback controller until project composition
+    logic is implemented. Acts as a placeholder to host future render of multi-track
+    timeline output.
+    """
+
+    pass
 
 
 class MainWindow(QMainWindow):
@@ -107,6 +120,16 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
         self.loadMediaPath(file_path)
+        # Add to clip bin mapping
+        base = os.path.basename(file_path)
+        display = f"{base}"
+        self._imported_clips[display] = file_path
+        # Avoid duplicate entries
+        if not any(
+            self.clip_bin.item(i).text() == display
+            for i in range(self.clip_bin.count())
+        ):
+            self.clip_bin.addItem(display)
 
     def loadMediaPath(self, file_path: str):
         """Programmatic media load (used by _importMedia and potential future drag-drop)."""
@@ -115,42 +138,74 @@ class MainWindow(QMainWindow):
                 raise RuntimeError(f"moviepy import failed: {_moviepy_import_error}")
             # Load clip for timeline thumbnails separately (legacy path) while playback uses controller
             self.clip = VideoFileClip(file_path)
-            self.controller.load(self.clip)
+            self.clip_controller.load(self.clip)
             self.timeline.addItem(f"Imported: {file_path.split('/')[-1]}")
-            if hasattr(self, "scrub") and self.scrub is not None:
+            if getattr(self, "clip_scrub", None) is not None:
                 try:
-                    self.scrub.setMedia(self.clip)
+                    self.clip_scrub.setMedia(self.clip)
+                    self.clip_scrub.setPosition(0.0)
                 except Exception as e:
-                    print(f"Failed to set media on timeline: {e}")
-                self.scrub.setPosition(0.0)
+                    print(f"Failed to set media on clip scrub: {e}")
             if hasattr(self, "media_player"):
                 self._loadAudio(file_path)
                 try:
                     self.media_player.setPosition(0)
                 except Exception:
                     pass
+            # Project controller stays blank until composition implemented.
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load video: {e}")
 
     def _createEditorLayout(self):
-        central_widget = QWidget()
-        main_layout = QVBoxLayout()
-        self.controller = VideoPlaybackController(self)
-        self.video_preview = VideoPreviewWidget(self.controller)
-        self.video_preview.setFixedHeight(300)
-        main_layout.addWidget(self.video_preview)
-        try:
-            from ..timeline import TimelineWidget
+        """Create new multi-pane editor layout.
 
-            self.scrub = TimelineWidget()
-            main_layout.addWidget(self.scrub)
+        Layout hierarchy:
+        +---------------------------------------------------------------+
+        | Clip Bin | Clip Preview | Project Preview (future composite) |
+        +---------------------------------------------------------------+
+        |                Multi-Track Timeline Placeholder               |
+        +---------------------------------------------------------------+
+        """
+        central_widget = QWidget()
+        root_layout = QVBoxLayout()
+
+        # Top splitter with three panes
+        top_splitter = QSplitter()
+        top_splitter.setOrientation(Qt.Horizontal)  # type: ignore
+
+        # --- Clip Bin (left) ---
+        self.clip_bin = QListWidget()
+        self.clip_bin.setSelectionMode(QListWidget.SingleSelection)
+        self.clip_bin.addItem("Clip 1 (placeholder)")
+        self.clip_bin.addItem("Clip 2 (placeholder)")
+        self.clip_bin.addItem("Clip 3 (placeholder)")
+        # Backward compatibility: legacy code & tests expect a `timeline` QListWidget
+        # representing imported clips. Keep alias to clip_bin.
+        self.timeline = self.clip_bin
+        top_splitter.addWidget(self.clip_bin)
+
+        # --- Clip Preview (middle) ---
+        self.clip_controller = VideoPlaybackController(self)
+        self.video_preview = VideoPreviewWidget(self.clip_controller)
+        clip_preview_container = QWidget()
+        clip_preview_layout = QVBoxLayout()
+        clip_preview_layout.setContentsMargins(0, 0, 0, 0)
+        clip_preview_layout.addWidget(self.video_preview)
+        # Clip-specific scrubber
+        try:
+            from ..timeline import TimelineWidget as TimelineWidget
+
+            self.clip_scrub_label = QLabel("Clip Scrubber")
+            self.clip_scrub_label.setStyleSheet(
+                "color:#bbb;font-size:11px;padding:2px 4px;"
+            )
+            clip_preview_layout.addWidget(self.clip_scrub_label)
+            self.clip_scrub = TimelineWidget()
+            clip_preview_layout.addWidget(self.clip_scrub)
         except Exception as e:
-            self.scrub = None
-            print(f"TimelineWidget unavailable: {e}")
-        self.timeline = QListWidget()
-        self.timeline.addItem("Clip 1")
-        self.timeline.addItem("Clip 2")
-        main_layout.addWidget(self.timeline)
+            self.clip_scrub = None
+            clip_preview_layout.addWidget(QLabel(f"Clip scrub unavailable: {e}"))
+        # Controls row (play/pause etc.)
         controls_layout = QHBoxLayout()
         self.play_btn = QPushButton("Play")
         self.pause_btn = QPushButton("Pause")
@@ -160,37 +215,111 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(self.pause_btn)
         controls_layout.addWidget(self.trim_btn)
         controls_layout.addWidget(self.cut_btn)
-        main_layout.addLayout(controls_layout)
-        self.play_btn.clicked.connect(self.controller.play)
-        self.pause_btn.clicked.connect(self.controller.pause)
-        self.clip = None
-        if self.scrub is not None:
-            # Preview seek while dragging (no audio reposition until release)
-            self.scrub.positionChanged.connect(lambda t: self.controller.seek(t))
-            # Commit seek when user releases slider
-            self.scrub.seekRequested.connect(self._commitScrubSeek)
-            # New bidirectional sync: pause playback during user drag & resume
-            try:
-                self.scrub.dragStarted.connect(self._onScrubDragStarted)
-                self.scrub.dragEnded.connect(self._onScrubDragEnded)
-            except Exception:
-                pass
-            self.scrub.inOutChanged.connect(self._inOutChanged)
-            try:
-                self.scrub.thumbnailsBusy.connect(self._onThumbsBusy)
-            except Exception:
-                pass
-            QShortcut(QKeySequence("I"), self, activated=self.scrub.setInPoint)
-            QShortcut(QKeySequence("O"), self, activated=self.scrub.setOutPoint)
-            QShortcut(QKeySequence("Shift+I"), self, activated=self.scrub.clearInPoint)
-            QShortcut(QKeySequence("Shift+O"), self, activated=self.scrub.clearOutPoint)
-            # Keep timeline position updating during playback
-            self.controller.positionChanged.connect(self.scrub.setPosition)
-        # Audio state & drift synchronization
-        self.controller.stateChanged.connect(self._onPlaybackState)
-        self.controller.positionChanged.connect(self._maybeResyncAudio)
-        central_widget.setLayout(main_layout)
+        clip_preview_layout.addLayout(controls_layout)
+        clip_preview_container.setLayout(clip_preview_layout)
+        top_splitter.addWidget(clip_preview_container)
+
+        # --- Project Preview (right) ---
+        # Placeholder project controller (blank until project assembly)
+        self.project_controller = VideoPlaybackController(self)
+        self.project_preview = ProjectPreviewWidget(self.project_controller)
+        project_preview_container = QWidget()
+        project_preview_layout = QVBoxLayout()
+        project_preview_layout.setContentsMargins(0, 0, 0, 0)
+        project_preview_layout.addWidget(self.project_preview)
+        project_preview_layout.addWidget(QLabel("Project Preview (placeholder)"))
+        project_preview_container.setLayout(project_preview_layout)
+        top_splitter.addWidget(project_preview_container)
+
+        # Bottom: timeline area (multi-track placeholder)
+        bottom_container = QWidget()
+        bottom_layout = QVBoxLayout()
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        try:
+            from ..timeline import TimelineWidget as TimelineWidget
+
+            self.project_scrub_label = QLabel("Project Scrubber (Blank)")
+            self.project_scrub_label.setStyleSheet(
+                "color:#bbb;font-size:11px;padding:2px 4px;"
+            )
+            bottom_layout.addWidget(self.project_scrub_label)
+            self.project_scrub = TimelineWidget()
+            # Explicit zero duration initialization
+            self.project_scrub.setDuration(0.0)
+            bottom_layout.addWidget(self.project_scrub)
+        except Exception as e:
+            self.project_scrub = None
+            bottom_layout.addWidget(QLabel(f"Project scrub unavailable: {e}"))
+
+        # Multi-track placeholder widget (future implementation)
+        self.multi_track_placeholder = QLabel(
+            "Multi-Track Timeline Placeholder\n(Tracks will appear here)"
+        )
+        self.multi_track_placeholder.setStyleSheet(
+            "background:#1e1e1e;color:#aaa;padding:12px;border:1px dashed #444;"
+        )
+        bottom_layout.addWidget(self.multi_track_placeholder)
+        bottom_container.setLayout(bottom_layout)
+
+        # Root splitter vertical orientation
+        root_splitter = QSplitter()
+        root_splitter.setOrientation(Qt.Vertical)  # type: ignore
+        root_splitter.addWidget(top_splitter)
+        root_splitter.addWidget(bottom_container)
+        root_splitter.setStretchFactor(0, 3)
+        root_splitter.setStretchFactor(1, 1)
+
+        root_layout.addWidget(root_splitter)
+        central_widget.setLayout(root_layout)
         self.setCentralWidget(central_widget)
+
+        # Connections
+        self.play_btn.clicked.connect(self.clip_controller.play)
+        self.pause_btn.clicked.connect(self.clip_controller.pause)
+        self.clip = None
+        self._imported_clips: dict[str, str] = {}
+
+        # Clip bin selection -> load into clip preview controller
+        self.clip_bin.currentTextChanged.connect(self._onClipBinSelectionChanged)
+
+        # Legacy scrub (if created earlier under name clip_scrub)
+        if getattr(self, "clip_scrub", None) is not None:
+            self.clip_scrub.positionChanged.connect(
+                lambda t: self.clip_controller.seek(t)
+            )
+            self.clip_scrub.seekRequested.connect(self._commitScrubSeek)
+            try:
+                self.clip_scrub.dragStarted.connect(self._onScrubDragStarted)
+                self.clip_scrub.dragEnded.connect(self._onScrubDragEnded)
+            except Exception:
+                pass
+            self.clip_scrub.inOutChanged.connect(self._inOutChanged)
+            try:
+                self.clip_scrub.thumbnailsBusy.connect(self._onThumbsBusy)
+            except Exception:
+                pass
+            self.clip_controller.positionChanged.connect(self.clip_scrub.setPosition)
+            # Shortcuts for clip in/out points
+            from PySide6.QtGui import QShortcut, QKeySequence
+
+            QShortcut(QKeySequence("I"), self, activated=self.clip_scrub.setInPoint)
+            QShortcut(QKeySequence("O"), self, activated=self.clip_scrub.setOutPoint)
+            QShortcut(
+                QKeySequence("Shift+I"), self, activated=self.clip_scrub.clearInPoint
+            )
+            QShortcut(
+                QKeySequence("Shift+O"), self, activated=self.clip_scrub.clearOutPoint
+            )
+
+        # Synchronize audio (clip only for now)
+        self.clip_controller.stateChanged.connect(self._onPlaybackState)
+        self.clip_controller.positionChanged.connect(self._maybeResyncAudio)
+
+    def _onClipBinSelectionChanged(self, text: str):
+        # Load selected clip into preview if we have a file path stored.
+        path = self._imported_clips.get(text)
+        if path:
+            self.loadMediaPath(path)
 
     def _initAudio(self):
         try:
@@ -226,32 +355,32 @@ class MainWindow(QMainWindow):
             t = t_or_index / self.clip.fps
         else:
             t = float(t_or_index)
-        self.controller.seek(t)
+        self.clip_controller.seek(t)
 
     def _onThumbsBusy(self, busy: bool):
         if busy:
             # Pause controller during heavy thumbnail generation to free decoding resources
             if (
-                getattr(self.controller, "_state", None)
-                and self.controller._state.playing
+                getattr(self.clip_controller, "_state", None)
+                and self.clip_controller._state.playing
             ):  # type: ignore[attr-defined]
                 self._was_playing_before_thumbs = True
-                self.controller.pause()
+                self.clip_controller.pause()
             else:
                 self._was_playing_before_thumbs = False
         else:
             if getattr(self, "_was_playing_before_thumbs", False):
-                self.controller.play()
+                self.clip_controller.play()
 
     def _previewSeek(self, t: float):  # kept for potential legacy slots
         if self.clip is None:
             return
-        self.controller.seek(t)
+        self.clip_controller.seek(t)
 
     def _commitSeek(self, t: float):  # kept for potential legacy slots
         if self.clip is None:
             return
-        self.controller.seek(t)
+        self.clip_controller.seek(t)
         if hasattr(self, "media_player") and self.media_player.source().isLocalFile():
             self.media_player.setPosition(int(t * 1000))
 
@@ -261,9 +390,12 @@ class MainWindow(QMainWindow):
     def _onScrubDragStarted(self):
         # Record if we should resume after drag
         self._resume_after_drag = False
-        if getattr(self.controller, "_state", None) and self.controller._state.playing:  # type: ignore[attr-defined]
+        if (
+            getattr(self.clip_controller, "_state", None)
+            and self.clip_controller._state.playing
+        ):  # type: ignore[attr-defined]
             self._resume_after_drag = True
-            self.controller.pause()
+            self.clip_controller.pause()
         # Also pause audio explicitly if playing
         if (
             hasattr(self, "media_player")
@@ -275,7 +407,7 @@ class MainWindow(QMainWindow):
     def _onScrubDragEnded(self):
         # Resume playback if it was playing before drag; audio seek handled in commit seek
         if getattr(self, "_resume_after_drag", False):
-            self.controller.play()
+            self.clip_controller.play()
 
     # --- Audio / controller synchronization ---
     def _onPlaybackState(self, state: str):
@@ -286,7 +418,7 @@ class MainWindow(QMainWindow):
             return
         if state == "playing":
             try:
-                mp.setPosition(int(self.controller.position() * 1000))
+                mp.setPosition(int(self.clip_controller.position() * 1000))
             except Exception:
                 pass
             mp.play()

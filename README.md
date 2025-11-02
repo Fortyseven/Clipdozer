@@ -134,6 +134,26 @@ Migration strategy:
 3. Replace direct widget calls with service invocations + signal wiring.
 4. Remove shim file (`timeline.py`) once all imports updated.
 
+## Current UI Layout (Work in Progress)
+The main window uses a split-pane layout preparing for multi-track editing:
+
+Top (three horizontal panes):
+1. Clip Bin – list of imported clips (select to load into clip preview).
+2. Clip Preview – playback controls + its own dedicated clip scrubber (with I/O shortcuts).
+3. Project Preview – currently blank (no media) with placeholder label; will render composite timeline output later.
+
+Bottom:
+Project scrubber (independent from the clip scrub) plus a multi-track placeholder area where track lanes will appear.
+
+Behavior:
+* Importing media loads only the Clip Preview and its scrubber.
+* Project preview and project scrubber remain idle (duration zero) until project assembly logic is implemented.
+* In/Out shortcuts (I/O and Shift+I / Shift+O) operate on the clip scrubber only.
+* Clip Scrubber and Project Scrubber are visually labeled; seeking one does not change the other's position.
+* A test (`tests/test_dual_scrub_independence.py`) asserts that clip scrub movement leaves project scrub at 0 when project is blank.
+
+This scaffolding separates source clip manipulation from future project-level timeline editing.
+
 
 ## Troubleshooting
 * Error "FFmpeg not found": install ffmpeg and ensure `which ffmpeg` returns a path.
