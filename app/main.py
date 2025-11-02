@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QStatusBar
+from PySide6.QtGui import QShortcut, QKeySequence
 import sys
 
 try:
@@ -77,6 +79,13 @@ class MainWindow(QMainWindow):
             self.total_frames = int(self.clip.fps * self.clip.duration)
             self._showFrame(0)
             self.timeline.addItem(f"Imported: {file_path.split('/')[-1]}")
+            if hasattr(self, "scrub") and self.scrub is not None:
+                # Provide full media so thumbnails + duration load
+                try:
+                    self.scrub.setMedia(self.clip)
+                except Exception as e:
+                    print(f"Failed to set media on timeline: {e}")
+                self.scrub.setPosition(0.0)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load video: {e}")
 
@@ -93,6 +102,18 @@ class MainWindow(QMainWindow):
         )
         self.video_preview.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(self.video_preview)
+
+        # Scrub / timeline bar (new)
+        try:
+            from .timeline import (
+                TimelineWidget,
+            )  # local import so file optional earlier
+
+            self.scrub = TimelineWidget()
+            main_layout.addWidget(self.scrub)
+        except Exception as e:  # fail gracefully if timeline missing
+            self.scrub = None
+            print(f"TimelineWidget unavailable: {e}")
 
         # Timeline/clip list (placeholder)
         self.timeline = QListWidget()
@@ -123,6 +144,16 @@ class MainWindow(QMainWindow):
         self.clip = None
         self.current_frame_index = 0
         self.total_frames = 0
+
+        if self.scrub is not None:
+            self.scrub.positionChanged.connect(self._previewSeek)
+            self.scrub.seekRequested.connect(self._commitSeek)
+            self.scrub.inOutChanged.connect(self._inOutChanged)
+            # keyboard shortcuts
+            QShortcut(QKeySequence("I"), self, activated=self.scrub.setInPoint)
+            QShortcut(QKeySequence("O"), self, activated=self.scrub.setOutPoint)
+            QShortcut(QKeySequence("Shift+I"), self, activated=self.scrub.clearInPoint)
+            QShortcut(QKeySequence("Shift+O"), self, activated=self.scrub.clearOutPoint)
 
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
@@ -194,6 +225,42 @@ class MainWindow(QMainWindow):
             self.play_timer.stop()
             self.current_frame_index = 0  # loop back to start
         self._showFrame(self.current_frame_index)
+        if self.clip is not None and self.scrub is not None:
+            t = self.current_frame_index / self.clip.fps
+            self.scrub.setPosition(t)
+
+    # --- Scrub bar handlers ---
+    def _previewSeek(self, t: float):
+        if self.clip is None:
+            return
+        self.play_timer.stop()
+        frame_index = int(t * self.clip.fps)
+        frame_index = max(0, min(frame_index, self.total_frames - 1))
+        self.current_frame_index = frame_index
+        self._showFrame(self.current_frame_index)
+
+    def _commitSeek(self, t: float):
+        if self.clip is None:
+            return
+        frame_index = int(t * self.clip.fps)
+        frame_index = max(0, min(frame_index, self.total_frames - 1))
+        self.current_frame_index = frame_index
+        self._showFrame(self.current_frame_index)
+
+    def _inOutChanged(self, in_t, out_t):
+        if not self.statusBar():
+            self.setStatusBar(QStatusBar())  # type: ignore
+        if in_t is None and out_t is None:
+            self.statusBar().showMessage("")
+        else:
+            try:
+                from .timeline import format_time
+
+                in_s = format_time(in_t) if in_t is not None else "--"
+                out_s = format_time(out_t) if out_t is not None else "--"
+                self.statusBar().showMessage(f"Selection: {in_s} to {out_s}")
+            except Exception:
+                pass
 
 
 def run():
