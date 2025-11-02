@@ -88,6 +88,7 @@ Current state:
 * Tests continue using the legacy path to avoid churn until logic/widget separation is complete.
 * `format_time` moved to `app.utils.timefmt` (legacy import still works through `app.timeline`).
 * Thumbnail and waveform workers extracted to `app.services.media_generation` reducing widget coupling.
+* NEW: `VideoPlaybackController` & `VideoPreviewWidget` (in `app.media.playback`) encapsulate playback. `MainWindow` now uses this abstraction instead of inline timers.
 
 Planned refactors:
 * Extract pure formatting (`format_time`) into `app.utils.timefmt` (kept exported for convenience).
@@ -106,6 +107,26 @@ Design principles:
 * Keep Qt specifics isolated in `ui/` so future headless operations (CLI batch export) can reuse core/services.
 * Avoid hard coupling MoviePy objects to widgets—wrap them in media adapters providing thread-safe access.
 * Use signals only at the UI boundary; internal services return plain Python data structures.
+* Centralize video playback logic so multiple simultaneous clips (future multi-track, source vs timeline viewer) can share a uniform API.
+
+### Playback Abstraction
+The new `VideoPlaybackController` separates raw frame decoding & state (play/pause/seek) from any specific UI widget. It emits:
+
+```
+frameReady(np.ndarray, t_seconds)
+positionChanged(t_seconds)
+stateChanged(str)  # playing|paused|stopped
+clipLoaded(duration_seconds)
+```
+
+`VideoPreviewWidget` is a thin QLabel-based consumer converting frames to a scaled `QPixmap`. Other components (future scopes, filters preview, export thumbnails) can subscribe directly to `frameReady` without depending on UI code in `MainWindow`.
+
+Migration path for existing code that previously called `MainWindow._showFrame` or manipulated playback indices:
+1. Hold a reference to a `VideoPlaybackController`.
+2. Call `controller.load(path_or_clip)` followed by `controller.play()` / `controller.pause()` / `controller.seek(t)`.
+3. Listen to `frameReady` for updated frames.
+
+This paves the way for a dual-viewer UI (source & program) or clip bins with hover scrubbing in later milestones.
 
 Migration strategy:
 1. Maintain backward compatibility while moving modules.
