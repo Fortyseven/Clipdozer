@@ -172,37 +172,55 @@ class VideoPreviewWidget(QLabel):
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet("background:#222;color:#fff;font-size:24px;")
         controller.frameReady.connect(self._onFrame)
+        # Cache last raw frame so we can rescale on widget resize without waiting
+        # for the next decoded frame.
+        self._last_frame = None
 
-    def _onFrame(self, frame, t: float):  # frame is numpy array
+    # --- Rendering helpers ---
+    def _renderFrame(self):
+        """Scale and display the cached frame to current widget size preserving aspect."""
+        frame = self._last_frame
+        if frame is None:
+            return
         try:
             from PIL import Image
             from io import BytesIO
 
-            if frame is None:
-                return
             h, w = frame.shape[0], frame.shape[1]
-            image = Image.fromarray(frame).convert("RGB")
             target_w = self.width()
             target_h = self.height()
             if target_w <= 0 or target_h <= 0:
                 return
-            aspect = w / h
+            aspect = w / h if h else 1.0
             if target_w / target_h > aspect:
                 new_h = target_h
                 new_w = int(new_h * aspect)
             else:
                 new_w = target_w
-                new_h = int(new_w / aspect)
-            image = image.resize((new_w, new_h))
+                new_h = int(new_w / aspect) if aspect else target_h
+            image = Image.fromarray(frame).convert("RGB").resize((new_w, new_h))
             buffer = BytesIO()
             image.save(buffer, format="PNG")
             buffer.seek(0)
             pix = QPixmap()
-            pix.loadFromData(buffer.read())
-            self.setPixmap(pix)
-            self.setText("")
+            if pix.loadFromData(buffer.read()):
+                self.setPixmap(pix)
+                self.setText("")
         except Exception as e:  # pragma: no cover
             self.setText(f"Frame err: {e}")
+
+    def _onFrame(self, frame, t: float):  # frame is numpy array
+        if frame is None:
+            return
+        # Cache and render
+        self._last_frame = frame
+        self._renderFrame()
+
+    # --- Resize behavior ---
+    def resizeEvent(self, event):  # noqa: D401 - Qt override
+        # Re-scale cached frame to new size.
+        self._renderFrame()
+        super().resizeEvent(event)
 
 
 __all__ = ["VideoPlaybackController", "VideoPreviewWidget"]

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QSplitter,
     QLabel,
+    QSizePolicy,
 )
 from PySide6.QtGui import QAction
 from PySide6.QtCore import QUrl, Qt
@@ -187,10 +188,13 @@ class MainWindow(QMainWindow):
         # --- Clip Preview (middle) ---
         self.clip_controller = VideoPlaybackController(self)
         self.video_preview = VideoPreviewWidget(self.clip_controller)
+        # Ensure preview scales to occupy all available space above scrubber
+        self.video_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         clip_preview_container = QWidget()
         clip_preview_layout = QVBoxLayout()
         clip_preview_layout.setContentsMargins(0, 0, 0, 0)
-        clip_preview_layout.addWidget(self.video_preview)
+        # Give the preview stretch priority so it grows/shrinks while scrubber & controls keep minimal height
+        clip_preview_layout.addWidget(self.video_preview, stretch=1)
         # Clip-specific scrubber
         try:
             from ..timeline import TimelineWidget as TimelineWidget
@@ -219,14 +223,20 @@ class MainWindow(QMainWindow):
         clip_preview_container.setLayout(clip_preview_layout)
         top_splitter.addWidget(clip_preview_container)
 
+        # Backward compatibility aliases for tests expecting legacy names
+        # (controller & scrub). Keep these after constructing clip preview pieces.
+        self.controller = self.clip_controller  # legacy alias
+        self.scrub = getattr(self, "clip_scrub", None)  # legacy alias
+
         # --- Project Preview (right) ---
         # Placeholder project controller (blank until project assembly)
         self.project_controller = VideoPlaybackController(self)
         self.project_preview = ProjectPreviewWidget(self.project_controller)
+        self.project_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         project_preview_container = QWidget()
         project_preview_layout = QVBoxLayout()
         project_preview_layout.setContentsMargins(0, 0, 0, 0)
-        project_preview_layout.addWidget(self.project_preview)
+        project_preview_layout.addWidget(self.project_preview, stretch=1)
         project_preview_layout.addWidget(QLabel("Project Preview (placeholder)"))
         project_preview_container.setLayout(project_preview_layout)
         top_splitter.addWidget(project_preview_container)
