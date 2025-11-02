@@ -47,11 +47,20 @@ from moviepy import VideoFileClip
 ```
 Code contains a fallback for older environments.
 
-## Testing Video Import
-Run the synthetic clip test:
+## Running Tests
+All tests live under `tests/`.
+
+Run the full suite:
 ```bash
-uv run python test_video_import.py
+uv run pytest -q
 ```
+
+Run a single test file (example):
+```bash
+uv run pytest tests/test_video_import.py -q
+```
+
+Previous ad-hoc root-level test scripts have been consolidated into the suite.
 
 ## Roadmap (short-term)
 * Timeline editing (trim/cut operations)
@@ -59,6 +68,51 @@ uv run python test_video_import.py
 * Audio track integration
 * Whisper-based caption generation
 * Project save/load
+
+## Architecture Overview
+Clipdozer is migrating toward a layered package structure under `app/` to keep growth manageable:
+
+```
+app/
+	core/        # Domain models & core timeline logic (ranges, formatting, orchestration)
+	ui/          # Qt widgets & windows (MainWindow, dialogs, future editor panels)
+	services/    # Long-running or async tasks (captioning via Whisper, import/export, render jobs)
+	media/       # Abstractions around MoviePy / ffmpeg (decoding, waveform extraction, clip wrappers)
+	utils/       # Small shared helpers (time formatting, threading utilities)
+	timeline.py  # Backwards-compat shim; original TimelineWidget kept during transition
+```
+
+Current state:
+* `TimelineWidget` still resides in `app.timeline` and is re-exported from `app.core.timeline` for forwards migration.
+* New code should prefer `from app.core.timeline import TimelineWidget`.
+* Tests continue using the legacy path to avoid churn until logic/widget separation is complete.
+* `format_time` moved to `app.utils.timefmt` (legacy import still works through `app.timeline`).
+* Thumbnail and waveform workers extracted to `app.services.media_generation` reducing widget coupling.
+
+Planned refactors:
+* Extract pure formatting (`format_time`) into `app.utils.timefmt` (kept exported for convenience).
+* Separate thumbnail & waveform generation into service classes (so UI becomes a thin view + signals).
+* Introduce a `Project` model in `app.core` encapsulating clips, tracks, and metadata for save/load.
+* Add a rendering pipeline service coordinating ffmpeg export.
+
+New modules added:
+* `app/core/project.py` – minimal `Project` and `ClipDescriptor` dataclasses with JSON save/load.
+* `app/media/clip_adapter.py` – thread-safe wrapper around MoviePy `VideoFileClip` (mutex + convenience APIs).
+* `app/services/captions.py` – caption generation scaffold (Whisper integration planned).
+* `app/services/export.py` – export pipeline stub with settings and placeholder implementation.
+* `app/ui/main_window.py` – relocated `MainWindow` (UI layer separation from legacy entrypoint `app/main.py`).
+
+Design principles:
+* Keep Qt specifics isolated in `ui/` so future headless operations (CLI batch export) can reuse core/services.
+* Avoid hard coupling MoviePy objects to widgets—wrap them in media adapters providing thread-safe access.
+* Use signals only at the UI boundary; internal services return plain Python data structures.
+
+Migration strategy:
+1. Maintain backward compatibility while moving modules.
+2. Introduce adapters/services in parallel with existing code paths.
+3. Replace direct widget calls with service invocations + signal wiring.
+4. Remove shim file (`timeline.py`) once all imports updated.
+
 
 ## Troubleshooting
 * Error "FFmpeg not found": install ffmpeg and ensure `which ffmpeg` returns a path.
