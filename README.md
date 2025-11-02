@@ -12,6 +12,7 @@ Lightweight desktop editor for short-form portrait video clips.
 * Visual timeline with highlighted In/Out region and generated frame thumbnails (auto on import)
 	* Thumbnails now generated asynchronously; they will refine shortly after import.
 	* Resizing the window triggers a debounced regeneration sized to available width.
+* Audio playback synchronized with video scrubbing (basic play/pause/seek, looping)
 
 ## Requirements
 * Python 3.11+

@@ -11,9 +11,10 @@ from PySide6.QtWidgets import (
     QFileDialog,
 )
 from PySide6.QtGui import QAction, QPixmap
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtWidgets import QStatusBar
 from PySide6.QtGui import QShortcut, QKeySequence
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 import sys
 
 try:
@@ -37,6 +38,7 @@ class MainWindow(QMainWindow):
         self.setGeometry(100, 100, 800, 600)
         self._createMenuBar()
         self._createEditorLayout()
+        self._initAudio()
 
     def _createMenuBar(self):
         menu_bar = self.menuBar()
@@ -86,6 +88,9 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     print(f"Failed to set media on timeline: {e}")
                 self.scrub.setPosition(0.0)
+            # load audio
+            if hasattr(self, "media_player"):
+                self._loadAudio(file_path)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load video: {e}")
 
@@ -158,6 +163,23 @@ class MainWindow(QMainWindow):
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
 
+    # --- Audio setup ---
+    def _initAudio(self):
+        try:
+            self.audio_output = QAudioOutput(self)
+            self.media_player = QMediaPlayer(self)
+            self.media_player.setAudioOutput(self.audio_output)
+            self.audio_output.setVolume(0.8)
+        except Exception as e:
+            print(f"Audio init failed: {e}")
+
+    def _loadAudio(self, file_path: str):
+        try:
+            self.media_player.setSource(QUrl.fromLocalFile(file_path))
+            self.media_player.setPosition(0)
+        except Exception as e:
+            print(f"Audio load failed: {e}")
+
     def _ensureFFmpeg(self):
         """Check ffmpeg availability; MoviePy relies on it for decoding."""
         import shutil
@@ -208,13 +230,29 @@ class MainWindow(QMainWindow):
     def _play(self):
         if self.clip is None:
             return
+        # If at end, reset to start before playing
+        if self.current_frame_index >= self.total_frames - 1 and self.total_frames > 0:
+            self.current_frame_index = 0
+            self._showFrame(0)
+            if (
+                hasattr(self, "media_player")
+                and self.media_player.source().isLocalFile()
+            ):
+                self.media_player.setPosition(0)
         # start timer with frame interval
         interval_ms = int(1000 / self.clip.fps)
         if not self.play_timer.isActive():
             self.play_timer.start(interval_ms)
+        if hasattr(self, "media_player") and self.media_player.source().isLocalFile():
+            pos_ms = int((self.current_frame_index / self.clip.fps) * 1000)
+            if abs(self.media_player.position() - pos_ms) > 80:
+                self.media_player.setPosition(pos_ms)
+            self.media_player.play()
 
     def _pause(self):
         self.play_timer.stop()
+        if hasattr(self, "media_player"):
+            self.media_player.pause()
 
     def _advanceFrame(self):
         if self.clip is None:
@@ -222,8 +260,17 @@ class MainWindow(QMainWindow):
             return
         self.current_frame_index += 1
         if self.current_frame_index >= self.total_frames:
+            # Reached end: stop everything (no looping)
             self.play_timer.stop()
-            self.current_frame_index = 0  # loop back to start
+            self.current_frame_index = self.total_frames - 1
+            if (
+                hasattr(self, "media_player")
+                and self.media_player.playbackState()
+                == QMediaPlayer.PlaybackState.PlayingState
+            ):
+                self.media_player.pause()
+            # Do not update frame again beyond end
+            return
         self._showFrame(self.current_frame_index)
         if self.clip is not None and self.scrub is not None:
             t = self.current_frame_index / self.clip.fps
@@ -246,6 +293,8 @@ class MainWindow(QMainWindow):
         frame_index = max(0, min(frame_index, self.total_frames - 1))
         self.current_frame_index = frame_index
         self._showFrame(self.current_frame_index)
+        if hasattr(self, "media_player") and self.media_player.source().isLocalFile():
+            self.media_player.setPosition(int(t * 1000))
 
     def _inOutChanged(self, in_t, out_t):
         if not self.statusBar():
