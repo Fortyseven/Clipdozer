@@ -32,3 +32,5 @@ To ensure Clipdozer is lightweight, easy to develop, and runs on Windows, macOS,
 - Import directly from provided URLs (using yt-dlp)
 - Apply filters and effects
 - Share directly to social media platforms
+
+Use `uv` for managing packages and our virtual environment. (`uv add <package>` to add a package, `uv run <command>` to run a command within the virtual environment.) Do not use the system Python or pip directly.

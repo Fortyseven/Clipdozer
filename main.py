@@ -1,6 +1,4 @@
-def main():
-    print("Hello from clipdozer!")
-
+from app import run
 
 if __name__ == "__main__":
-    main()
+    run()
