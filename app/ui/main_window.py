@@ -135,6 +135,12 @@ class MainWindow(QMainWindow):
             self.scrub.positionChanged.connect(lambda t: self.controller.seek(t))
             # Commit seek when user releases slider
             self.scrub.seekRequested.connect(self._commitScrubSeek)
+            # New bidirectional sync: pause playback during user drag & resume
+            try:
+                self.scrub.dragStarted.connect(self._onScrubDragStarted)
+                self.scrub.dragEnded.connect(self._onScrubDragEnded)
+            except Exception:
+                pass
             self.scrub.inOutChanged.connect(self._inOutChanged)
             try:
                 self.scrub.thumbnailsBusy.connect(self._onThumbsBusy)
@@ -217,6 +223,25 @@ class MainWindow(QMainWindow):
 
     def _commitScrubSeek(self, t: float):
         self._commitSeek(t)
+
+    def _onScrubDragStarted(self):
+        # Record if we should resume after drag
+        self._resume_after_drag = False
+        if getattr(self.controller, "_state", None) and self.controller._state.playing:  # type: ignore[attr-defined]
+            self._resume_after_drag = True
+            self.controller.pause()
+        # Also pause audio explicitly if playing
+        if (
+            hasattr(self, "media_player")
+            and self.media_player.playbackState()
+            == QMediaPlayer.PlaybackState.PlayingState
+        ):
+            self.media_player.pause()
+
+    def _onScrubDragEnded(self):
+        # Resume playback if it was playing before drag; audio seek handled in commit seek
+        if getattr(self, "_resume_after_drag", False):
+            self.controller.play()
 
     # --- Audio / controller synchronization ---
     def _onPlaybackState(self, state: str):

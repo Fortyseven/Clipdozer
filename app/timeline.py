@@ -257,6 +257,8 @@ class TimelineWidget(QWidget):
 
     positionChanged = Signal(float)
     seekRequested = Signal(float)
+    dragStarted = Signal()
+    dragEnded = Signal()
     inOutChanged = Signal(object, object)
     thumbnailsBusy = Signal(bool)  # True when regeneration active
 
@@ -409,7 +411,7 @@ class TimelineWidget(QWidget):
     # --- Slider callbacks ---
     def _onSliderPressed(self):
         # we don't emit yet; user is starting drag
-        pass
+        self.dragStarted.emit()
 
     def _onSliderMoved(self, value: int):
         if self._suppress_signal:
@@ -431,6 +433,7 @@ class TimelineWidget(QWidget):
         t = (value / self.slider.maximum()) * self._duration
         self.label_current.setText(format_time(t))
         self.seekRequested.emit(t)
+        self.dragEnded.emit()
         if self.thumbnail_strip.isVisible():
             self.thumbnail_strip.setCurrentTime(t)
         if hasattr(self, "waveform") and self.waveform.isVisible():
