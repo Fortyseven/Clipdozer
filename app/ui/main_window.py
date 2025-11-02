@@ -449,8 +449,12 @@ class MainWindow(QMainWindow):
         try:
             audio_ms = mp.position()
             video_ms = int(t * 1000)
-            if abs(audio_ms - video_ms) > 120:  # >120ms drift -> correct
+            # Only correct when audio is BEHIND video significantly (fast-forward audio).
+            # Avoid rewinding audio when video decode lags; rewinds cause audible chunk repeats.
+            drift = video_ms - audio_ms
+            if drift > 160:  # video ahead -> push audio forward
                 mp.setPosition(video_ms)
+            # If audio ahead, let video catch up naturally; frame skipping now reduces drift.
         except Exception:
             pass
 

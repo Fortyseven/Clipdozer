@@ -155,6 +155,23 @@ class VideoPlaybackController(QObject):
         if not self._clip_adapter:
             self._timer.stop()
             return
+        fps = self._state.fps or 24.0
+        # Use wall clock to derive desired frame to reduce drift instead of purely incrementing.
+        try:
+            from time import perf_counter
+
+            if self._play_start_time is not None:
+                elapsed = perf_counter() - self._play_start_time
+                desired = int(elapsed * fps)
+                # Clamp and only jump forward if we're noticeably behind (skip frames)
+                if desired >= self._state.total_frames:
+                    self.stop()
+                    return
+                if desired - self._state.current_frame > self._sync_threshold_frames:
+                    self._state.current_frame = desired
+        except Exception:
+            pass
+        # Normal progressive advance (acts as fallback and ensures steady position update)
         next_index = self._state.current_frame + 1
         if next_index >= self._state.total_frames:
             self.stop()
