@@ -77,6 +77,15 @@ class MainWindow(QMainWindow):
                 raise RuntimeError(f"moviepy import failed: {_moviepy_import_error}")
             # load clip
             self.clip = VideoFileClip(file_path)
+            # Retain explicit references to readers to prevent early GC/closure
+            try:
+                self._video_reader_ref = getattr(self.clip, "reader", None)
+                self._audio_reader_ref = getattr(
+                    getattr(self.clip, "audio", None), "reader", None
+                )
+            except Exception:
+                self._video_reader_ref = None
+                self._audio_reader_ref = None
             self.current_frame_index = 0
             self.total_frames = int(self.clip.fps * self.clip.duration)
             self._showFrame(0)
@@ -145,15 +154,27 @@ class MainWindow(QMainWindow):
         from PySide6.QtCore import QTimer
 
         self.play_timer = QTimer(self)
+        # Use precise timer for better frame pacing
+        try:
+            self.play_timer.setTimerType(Qt.PreciseTimer)  # type: ignore[attr-defined]
+        except Exception:
+            pass
         self.play_timer.timeout.connect(self._advanceFrame)
         self.clip = None
         self.current_frame_index = 0
         self.total_frames = 0
+        self._play_start_time = None  # monotonic start for wall-clock sync
+        self._sync_threshold_frames = 2  # drift tolerance before correction
 
         if self.scrub is not None:
             self.scrub.positionChanged.connect(self._previewSeek)
             self.scrub.seekRequested.connect(self._commitSeek)
             self.scrub.inOutChanged.connect(self._inOutChanged)
+            # Auto pause during thumbnail regeneration to avoid jitter
+            try:
+                self.scrub.thumbnailsBusy.connect(self._onThumbsBusy)
+            except Exception:
+                pass
             # keyboard shortcuts
             QShortcut(QKeySequence("I"), self, activated=self.scrub.setInPoint)
             QShortcut(QKeySequence("O"), self, activated=self.scrub.setOutPoint)
@@ -200,7 +221,14 @@ class MainWindow(QMainWindow):
                 t = t_or_index / self.clip.fps
             else:
                 t = float(t_or_index)
-            frame = self.clip.get_frame(t)
+            mutex = getattr(self.clip, "_external_mutex", None)
+            if mutex is not None:
+                mutex.lock()
+            try:
+                frame = self.clip.get_frame(t)
+            finally:
+                if mutex is not None:
+                    mutex.unlock()
             h, w = frame.shape[0], frame.shape[1]
             image = Image.fromarray(frame).convert("RGB")
             # maintain aspect ratio
@@ -243,6 +271,15 @@ class MainWindow(QMainWindow):
         interval_ms = int(1000 / self.clip.fps)
         if not self.play_timer.isActive():
             self.play_timer.start(interval_ms)
+            # establish wall-clock baseline
+            try:
+                from time import perf_counter
+
+                self._play_start_time = perf_counter() - (
+                    self.current_frame_index / self.clip.fps
+                )
+            except Exception:
+                self._play_start_time = None
         if hasattr(self, "media_player") and self.media_player.source().isLocalFile():
             pos_ms = int((self.current_frame_index / self.clip.fps) * 1000)
             if abs(self.media_player.position() - pos_ms) > 80:
@@ -258,7 +295,54 @@ class MainWindow(QMainWindow):
         if self.clip is None:
             self.play_timer.stop()
             return
-        self.current_frame_index += 1
+        # Determine authoritative time source (audio if playing, else wall clock)
+        audio_index = None
+        if (
+            hasattr(self, "media_player")
+            and self.media_player.playbackState()
+            == QMediaPlayer.PlaybackState.PlayingState
+        ):
+            try:
+                audio_ms = self.media_player.position()
+                audio_index = int((audio_ms / 1000.0) * self.clip.fps)
+            except Exception:
+                audio_index = None
+        wall_index = None
+        if self._play_start_time is not None:
+            try:
+                from time import perf_counter
+
+                elapsed = perf_counter() - self._play_start_time
+                wall_index = int(elapsed * self.clip.fps)
+            except Exception:
+                wall_index = None
+
+        next_index = self.current_frame_index + 1
+        # Prefer audio for sync; fall back to wall clock if drift large
+        # Apply hysteresis: only snap if drift exceeds threshold AND drift direction persistent
+        if audio_index is not None:
+            drift = audio_index - next_index
+            if abs(drift) > self._sync_threshold_frames:
+                # require consistent direction for two consecutive checks
+                last_drift = getattr(self, "_last_audio_drift", 0)
+                if (drift > 0 and last_drift > 0) or (drift < 0 and last_drift < 0):
+                    next_index = audio_index
+                self._last_audio_drift = drift
+            else:
+                self._last_audio_drift = 0
+        elif wall_index is not None:
+            drift_w = wall_index - next_index
+            if abs(drift_w) > self._sync_threshold_frames * 2:
+                last_w_drift = getattr(self, "_last_wall_drift", 0)
+                if (drift_w > 0 and last_w_drift > 0) or (
+                    drift_w < 0 and last_w_drift < 0
+                ):
+                    next_index = wall_index
+                self._last_wall_drift = drift_w
+            else:
+                self._last_wall_drift = 0
+
+        self.current_frame_index = next_index
         if self.current_frame_index >= self.total_frames:
             # Reached end: stop everything (no looping)
             self.play_timer.stop()
@@ -275,6 +359,19 @@ class MainWindow(QMainWindow):
         if self.clip is not None and self.scrub is not None:
             t = self.current_frame_index / self.clip.fps
             self.scrub.setPosition(t)
+
+    def _onThumbsBusy(self, busy: bool):
+        if busy:
+            # Pause playback while heavy decode threads run
+            if self.play_timer.isActive():
+                self._was_playing_before_thumbs = True
+                self._pause()
+            else:
+                self._was_playing_before_thumbs = False
+        else:
+            # Resume if we were playing before
+            if getattr(self, "_was_playing_before_thumbs", False):
+                self._play()
 
     # --- Scrub bar handlers ---
     def _previewSeek(self, t: float):

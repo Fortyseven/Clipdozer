@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, QSize, QRectF, QThread, QObject, QTimer
+from PySide6.QtCore import Qt, Signal, QSize, QRectF, QThread, QObject, QTimer, QMutex
 from PySide6.QtWidgets import (
     QWidget,
     QHBoxLayout,
@@ -70,7 +70,14 @@ class ThumbnailWorker(QObject):
                     print(f"[ThumbnailWorker] interrupted gen={self._gen}")
                 return
             try:
-                frame = self._clip.get_frame(ts)
+                mutex = getattr(self._clip, "_external_mutex", None)
+                if mutex is not None:
+                    mutex.lock()
+                try:
+                    frame = self._clip.get_frame(ts)
+                finally:
+                    if mutex is not None:
+                        mutex.unlock()
             except Exception:
                 continue
             image = _Image.fromarray(frame).convert("RGB")
@@ -211,6 +218,184 @@ class _ThumbnailStrip(QWidget):
         p.end()
 
 
+# --- Waveform support ---
+
+
+class _WaveformWidget(QWidget):
+    def __init__(self):
+        super().__init__()
+        self._amps: List[float] = []
+        self._duration: float = 0.0
+        self._current_time: float = 0.0
+        self.setMinimumHeight(40)
+        self.setVisible(False)
+
+    def setData(self, amps: List[float], duration: float):
+        self._amps = amps
+        self._duration = duration
+        self.setVisible(True)
+        self.update()
+
+    def setCurrentTime(self, t: float):
+        self._current_time = t
+        self.update()
+
+    def paintEvent(self, e):  # type: ignore[override]
+        p = QPainter(self)
+        r = self.rect()
+        p.fillRect(r, QColor(18, 18, 24))
+        if not self._amps or self._duration <= 0:
+            p.end()
+            return
+        w = r.width()
+        h = r.height()
+        mid = h / 2.0
+        n = len(self._amps)
+        from PySide6.QtGui import QPainterPath
+
+        path = QPainterPath()
+        path.moveTo(0, mid)
+        for i, a in enumerate(self._amps):
+            x = (i / (n - 1)) * w if n > 1 else 0
+            amp_h = a * (h * 0.9 / 2.0)
+            path.lineTo(x, mid - amp_h)
+        for i, a in reversed(list(enumerate(self._amps))):
+            x = (i / (n - 1)) * w if n > 1 else 0
+            amp_h = a * (h * 0.9 / 2.0)
+            path.lineTo(x, mid + amp_h)
+        path.closeSubpath()
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(70, 130, 200))
+        p.drawPath(path)
+        # Playhead
+        frac = max(0.0, min(1.0, self._current_time / self._duration))
+        x_line = int(frac * w)
+        p.setPen(QPen(QColor(255, 255, 255), 1))
+        p.drawLine(x_line, 0, x_line, h)
+        p.end()
+
+
+class WaveformWorker(QObject):
+    finished = Signal(int, list, float)
+    failed = Signal(int, str)
+
+    def __init__(self, clip, gen_id: int, width_hint: int):
+        super().__init__()
+        self._clip = clip
+        self._gen = gen_id
+        self._width = width_hint
+
+    def run(self):
+        try:
+            duration = float(getattr(self._clip, "duration", 0.0))
+        except Exception as e:
+            self.failed.emit(self._gen, f"duration err: {e}")
+            return
+        if duration <= 0 or getattr(self._clip, "audio", None) is None:
+            self.failed.emit(self._gen, "no audio")
+            return
+        try:
+            import numpy as np
+
+            # Use moderate FPS for waveform extraction to reduce I/O pressure
+            # Acquire external mutex if provided to serialize decode with other readers
+            mutex = getattr(self._clip, "_external_mutex", None)
+            if mutex is not None:
+                mutex.lock()
+            try:
+                raw = self._clip.audio.to_soundarray(fps=200)
+            finally:
+                if mutex is not None:
+                    mutex.unlock()
+            if raw is None or raw.size == 0:
+                self.failed.emit(self._gen, "empty audio")
+                return
+            if raw.ndim == 2:
+                raw = raw.mean(axis=1)
+            target_points = min(
+                max(80, int(self._width / 2) if self._width > 0 else 400), 1600
+            )
+            n = raw.shape[0]
+            if target_points > n:
+                target_points = n
+            idx_edges = np.linspace(0, n, target_points + 1).astype(int)
+            rms_vals = []
+            for i in range(target_points):
+                s = idx_edges[i]
+                e = idx_edges[i + 1]
+                if e <= s:
+                    rms_vals.append(0.0)
+                    continue
+                seg = raw[s:e]
+                rms = float(np.sqrt(np.mean(seg * seg)))
+                rms_vals.append(rms)
+            rms_arr = np.array(rms_vals, dtype=float)
+            peak = float(rms_arr.max()) if rms_arr.size else 1.0
+            if peak <= 0:
+                peak = 1.0
+            env = (rms_arr / peak) ** 0.85
+            self.finished.emit(self._gen, env.tolist(), duration)
+        except Exception as e:
+            if DEBUG_TIMELINE:
+                print(f"[WaveformWorker] generation failed gen={self._gen}: {e}")
+            self.failed.emit(self._gen, f"audio err: {e}")
+
+
+def _initialize_waveform(tw: "TimelineWidget"):
+    if getattr(tw, "waveform", None) is not None:
+        return
+    tw.waveform = _WaveformWidget()
+    layout = tw.layout()
+    if layout is not None:
+        layout.insertWidget(2, tw.waveform)  # after thumbnails
+    tw._wave_gen_id = 0
+    tw._wave_thread: Optional[QThread] = None
+    tw._wave_worker: Optional[WaveformWorker] = None
+
+    def _startWaveformGeneration(self: "TimelineWidget"):
+        if self._clip is None:
+            return
+        if (
+            getattr(self, "_wave_thread", None) is not None
+            and self._wave_thread.isRunning()
+        ):
+            self._wave_thread.requestInterruption()
+            self._wave_thread.quit()
+            self._wave_thread.wait(50)
+        self._wave_gen_id += 1
+        gen = self._wave_gen_id
+        worker = WaveformWorker(self._clip, gen, self.width())
+        thread = QThread()
+        self._wave_thread = thread
+        self._wave_worker = worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._waveformReady)
+        worker.failed.connect(self._waveformFailed)
+        worker.finished.connect(lambda *_: thread.quit())
+        worker.failed.connect(lambda *_: thread.quit())
+        thread.finished.connect(worker.deleteLater)
+        thread.start()
+
+    def _waveformReady(self: "TimelineWidget", gen: int, amps: list, duration: float):
+        if gen != self._wave_gen_id:
+            return
+        if amps:
+            self.waveform.setData(amps, duration)
+            self.waveform.setCurrentTime(0.0)
+        else:
+            self.waveform.setVisible(False)
+
+    def _waveformFailed(self: "TimelineWidget", gen: int, reason: str):
+        if gen != self._wave_gen_id:
+            return
+        self.waveform.setVisible(False)
+
+    tw._startWaveformGeneration = _startWaveformGeneration.__get__(tw, tw.__class__)  # type: ignore
+    tw._waveformReady = _waveformReady.__get__(tw, tw.__class__)  # type: ignore
+    tw._waveformFailed = _waveformFailed.__get__(tw, tw.__class__)  # type: ignore
+
+
 class TimelineWidget(QWidget):
     """Simple scrub bar with future in/out marker support.
 
@@ -223,6 +408,7 @@ class TimelineWidget(QWidget):
     positionChanged = Signal(float)
     seekRequested = Signal(float)
     inOutChanged = Signal(object, object)
+    thumbnailsBusy = Signal(bool)  # True when regeneration active
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -237,6 +423,9 @@ class TimelineWidget(QWidget):
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.timeout.connect(self._regenerateThumbnails)
+        # Mutex exposed for worker threads to coordinate clip decoding
+        self._clip_mutex = QMutex()
+        # Bind mutex onto clip later in setMedia so workers can access via _external_mutex
 
         outer = QVBoxLayout()
         outer.setContentsMargins(0, 0, 0, 0)
@@ -268,6 +457,8 @@ class TimelineWidget(QWidget):
         outer.addWidget(self.slider)
 
         self.setLayout(outer)
+        # Initialize waveform support (invisible until data loaded)
+        _initialize_waveform(self)
 
     # --- Public API ---
     def setDuration(self, duration: float):
@@ -298,6 +489,8 @@ class TimelineWidget(QWidget):
         self.label_current.setText(format_time(t))
         if self.thumbnail_strip.isVisible():
             self.thumbnail_strip.setCurrentTime(t)
+        if hasattr(self, "waveform") and self.waveform.isVisible():
+            self.waveform.setCurrentTime(t)
 
     def setInPoint(self):
         if self._duration <= 0:
@@ -378,6 +571,8 @@ class TimelineWidget(QWidget):
         self.positionChanged.emit(t)
         if self.thumbnail_strip.isVisible():
             self.thumbnail_strip.setCurrentTime(t)
+        if hasattr(self, "waveform") and self.waveform.isVisible():
+            self.waveform.setCurrentTime(t)
 
     def _onSliderReleased(self):
         if self._duration <= 0:
@@ -388,6 +583,8 @@ class TimelineWidget(QWidget):
         self.seekRequested.emit(t)
         if self.thumbnail_strip.isVisible():
             self.thumbnail_strip.setCurrentTime(t)
+        if hasattr(self, "waveform") and self.waveform.isVisible():
+            self.waveform.setCurrentTime(t)
 
     # --- Context menu for future marker control ---
     def contextMenuEvent(self, event):  # type: ignore[override]
@@ -408,17 +605,26 @@ class TimelineWidget(QWidget):
     def setMedia(self, clip, max_thumbs: int = 12):
         """Provide a MoviePy VideoFileClip for generating thumbnails and duration asynchronously."""
         self._clip = clip
+        # Attach mutex for external workers
+        try:
+            setattr(self._clip, "_external_mutex", self._clip_mutex)
+        except Exception:
+            pass
         # Set duration immediately so scrubbing works before thumbs
         try:
             self.setDuration(float(getattr(clip, "duration", 0.0)))
         except Exception:
             pass
         self._startThumbnailGeneration(max_thumbs=max_thumbs)
+        # Start waveform generation
+        if hasattr(self, "_startWaveformGeneration"):
+            self._startWaveformGeneration()
 
     # --- Thumbnail async flow ---
     def _startThumbnailGeneration(self, max_thumbs: int = 12):
         if self._clip is None:
             return
+        self.thumbnailsBusy.emit(True)
         # Cancel previous thread if running
         if self._pending_thread is not None:
             # Request interruption and allow previous to wind down; do not block long.
@@ -451,6 +657,7 @@ class TimelineWidget(QWidget):
         if self._pending_thread is thread:
             self._pending_thread = None
             self._thumb_worker = None
+            self.thumbnailsBusy.emit(False)
             if DEBUG_TIMELINE:
                 print("[TimelineWidget] thread cleared")
 
@@ -494,6 +701,8 @@ class TimelineWidget(QWidget):
         if self._clip is None:
             return
         self._startThumbnailGeneration()
+        if hasattr(self, "_startWaveformGeneration"):
+            self._startWaveformGeneration()
 
     def closeEvent(self, event):  # type: ignore[override]
         # Cleanly stop any running worker thread on widget close to avoid warnings.
@@ -502,3 +711,11 @@ class TimelineWidget(QWidget):
             self._pending_thread.quit()
             self._pending_thread.wait(200)
         super().closeEvent(event)
+        if (
+            hasattr(self, "_wave_thread")
+            and self._wave_thread is not None
+            and self._wave_thread.isRunning()
+        ):
+            self._wave_thread.requestInterruption()
+            self._wave_thread.quit()
+            self._wave_thread.wait(200)
