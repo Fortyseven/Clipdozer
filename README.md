@@ -70,26 +70,25 @@ Previous ad-hoc root-level test scripts have been consolidated into the suite.
 * Project save/load
 
 ## Architecture Overview
-Clipdozer is migrating toward a layered package structure under `app/` to keep growth manageable:
+Clipdozer uses a layered package structure under `app/`:
 
 ```
 app/
 	core/        # Domain models & core timeline logic (ranges, formatting, orchestration)
 	ui/          # Qt widgets & windows (MainWindow, dialogs, future editor panels)
 		components/  # Reusable UI components (buttons, sliders, etc.)
-	        timeline/timeline.py  # Backwards-compat shim; original TimelineWidget kept during transition
+		components/scrubber.py  # ScrubberWidget implementation
 	services/    # Long-running or async tasks (captioning via Whisper, import/export, render jobs)
 	media/       # Abstractions around MoviePy / ffmpeg (decoding, waveform extraction, clip wrappers)
 	utils/       # Small shared helpers (time formatting, threading utilities)
 ```
 
-Current state:
-* `TimelineWidget` still resides in `app.ui.components.timeline` and is re-exported from `app.core.timeline` for forwards migration.
-* New code should prefer `from app.core.timeline import TimelineWidget`.
-* Tests continue using the legacy path to avoid churn until logic/widget separation is complete.
-* `format_time` moved to `app.utils.timefmt` (legacy import still works through `app.ui.components.timeline`).
-* Thumbnail and waveform workers extracted to `app.services.media_generation` reducing widget coupling.
-* NEW: `VideoPlaybackController` & `VideoPreviewWidget` (in `app.media.playback`) encapsulate playback. `MainWindow` now uses this abstraction instead of inline timers.
+Key components:
+* `ScrubberWidget` (`app/ui/components/scrubber.py`) – navigation, markers, thumbnails, waveform.
+* `ClipPreviewPanel` / `ProjectPreviewPanel` – composed preview + scrubber containers.
+* `VideoPlaybackController` & `VideoPreviewWidget` – playback abstraction and frame display.
+* `format_time` utility – canonical time formatting in `app/utils/timefmt.py`.
+* Thumbnail & waveform workers – async generation (`app/services/media_generation.py`).
 
 Planned refactors:
 * Extract pure formatting (`format_time`) into `app.utils.timefmt` (kept exported for convenience).
@@ -122,18 +121,10 @@ clipLoaded(duration_seconds)
 
 `VideoPreviewWidget` is a thin QLabel-based consumer converting frames to a scaled `QPixmap`. Other components (future scopes, filters preview, export thumbnails) can subscribe directly to `frameReady` without depending on UI code in `MainWindow`.
 
-Migration path for existing code that previously called `MainWindow._showFrame` or manipulated playback indices:
-1. Hold a reference to a `VideoPlaybackController`.
-2. Call `controller.load(path_or_clip)` followed by `controller.play()` / `controller.pause()` / `controller.seek(t)`.
-3. Listen to `frameReady` for updated frames.
-
-This paves the way for a dual-viewer UI (source & program) or clip bins with hover scrubbing in later milestones.
-
-Migration strategy:
-1. Maintain backward compatibility while moving modules.
-2. Introduce adapters/services in parallel with existing code paths.
-3. Replace direct widget calls with service invocations + signal wiring.
-4. Remove shim file (`timeline.py`) once all imports updated.
+Usage recap:
+1. Create a `VideoPlaybackController` and load media.
+2. `ClipPreviewPanel` handles wiring of preview + scrubber automatically.
+3. Listen to `frameReady` for raw frames (numpy arrays) if you need custom rendering.
 
 ## Current UI Layout (Work in Progress)
 The main window uses a split-pane layout preparing for multi-track editing:
@@ -154,6 +145,40 @@ Behavior:
 * A test (`tests/test_dual_scrub_independence.py`) asserts that clip scrub movement leaves project scrub at 0 when project is blank.
 
 This scaffolding separates source clip manipulation from future project-level timeline editing.
+
+## Terminology Alignment (Preview Panels & Scrubber)
+
+To standardize language moving forward the UI adopts these concepts:
+
+* Scrubber: Reusable widget for navigating a clip or project output (playhead slider, time labels) with optional In/Out markers, frame thumbnails, and waveform visualization. Implemented by `ScrubberWidget`.
+* Clip Preview Panel: A container combining a `VideoPlaybackController`, a `VideoPreviewWidget`, and a `ScrubberWidget` with thumbnails + waveform enabled. Class: `ClipPreviewPanel` in `app/ui/components/preview_panel.py`.
+* Project Preview Panel: Same structure but thumbnails + waveform disabled until project composition exists. Class: `ProjectPreviewPanel`.
+
+Guidelines:
+1. Use preview panels; do not manually assemble controller + preview + scrubber.
+2. Keep non-UI logic out of widgets—use services and core models.
+3. Prefer `format_time` for displaying timestamps consistently.
+
+Example usage:
+```python
+from app.ui.components.preview_panel import ClipPreviewPanel
+
+panel = ClipPreviewPanel()
+panel.load("/path/to/video.mp4")
+panel.controller.play()
+```
+
+This terminology will be used in future documentation, tests, and code reviews.
+
+## Future Refactor Steps
+
+Planned improvements:
+1. Move thumbnail & waveform generation orchestration out of `ScrubberWidget`.
+2. Introduce `ScrubberConfig` dataclass for feature toggles.
+3. Implement project composition pipeline feeding `ProjectPreviewPanel`.
+4. Add caption overlay rendering in preview panels.
+5. Consolidate playback timing logic for off-GUI decoding.
+6. Expand tests for preview panel behavior and configuration.
 
 
 ## Troubleshooting

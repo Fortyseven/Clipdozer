@@ -21,10 +21,10 @@ def test_timeline_updates_during_play(tmp_path):
     win = MainWindow()
     win.loadMediaPath(str(path))
     # Start playback
-    win.controller.play()
-    start_pos = win.scrub.currentPosition() if win.scrub else 0.0
+    win.clip_controller.play()
+    start_pos = win.clip_scrub.currentPosition() if win.clip_scrub else 0.0
     loop = QEventLoop()
     QTimer.singleShot(180, loop.quit)  # allow several frames
     loop.exec()
-    end_pos = win.scrub.currentPosition() if win.scrub else 0.0
+    end_pos = win.clip_scrub.currentPosition() if win.clip_scrub else 0.0
     assert end_pos > start_pos

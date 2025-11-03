@@ -20,9 +20,6 @@ from .services.media_generation import ThumbnailWorker, WaveformWorker
 DEBUG_TIMELINE = False  # set True for verbose thumbnail generation logging
 
 
-## Backward compatibility: format_time historically lived here; keep name available.
-
-
 class _TimelineSlider(QSlider):
     """Custom horizontal slider that can render in/out regions.
 

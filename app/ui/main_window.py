@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QSplitter,
     QLabel,
-    QSizePolicy,
 )
 from PySide6.QtGui import QAction
 from PySide6.QtCore import QUrl, Qt
@@ -38,15 +37,15 @@ except ImportError:  # pragma: no cover
         _moviepy_import_error = _e
 
 
-from ..media.playback import VideoPlaybackController, VideoPreviewWidget
+from ..media.playback import VideoPreviewWidget
+from .components.preview_panel import ClipPreviewPanel, ProjectPreviewPanel
 
 
 class ProjectPreviewWidget(VideoPreviewWidget):
-    """Second preview representing the composed project (timeline output).
+    """Preview representing future composed project output.
 
-    Currently mirrors selected clip playback controller until project composition
-    logic is implemented. Acts as a placeholder to host future render of multi-track
-    timeline output.
+    Currently mirrors clip selection conceptually; real composition rendering
+    will replace this placeholder.
     """
 
     pass
@@ -137,10 +136,10 @@ class MainWindow(QMainWindow):
         try:
             if VideoFileClip is None:
                 raise RuntimeError(f"moviepy import failed: {_moviepy_import_error}")
-            # Load clip for timeline thumbnails separately (legacy path) while playback uses controller
+            # Load clip and register in clip bin
             self.clip = VideoFileClip(file_path)
             self.clip_controller.load(self.clip)
-            self.timeline.addItem(f"Imported: {file_path.split('/')[-1]}")
+            self.clip_bin.addItem(f"Imported: {file_path.split('/')[-1]}")
             if getattr(self, "clip_scrub", None) is not None:
                 try:
                     self.clip_scrub.setMedia(self.clip)
@@ -180,37 +179,15 @@ class MainWindow(QMainWindow):
         self.clip_bin.addItem("Clip 1 (placeholder)")
         self.clip_bin.addItem("Clip 2 (placeholder)")
         self.clip_bin.addItem("Clip 3 (placeholder)")
-        # Backward compatibility: legacy code & tests expect a `timeline` QListWidget
-        # representing imported clips. Keep alias to clip_bin.
-        self.timeline = self.clip_bin
+        # Clip bin holds imported source clips.
         top_splitter.addWidget(self.clip_bin)
 
-        # --- Clip Preview (middle) ---
-        self.clip_controller = VideoPlaybackController(self)
-        self.video_preview = VideoPreviewWidget(self.clip_controller)
-        # Ensure preview scales to occupy all available space above scrubber
-        self.video_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        clip_preview_container = QWidget()
-        clip_preview_layout = QVBoxLayout()
-        clip_preview_layout.setContentsMargins(0, 0, 0, 0)
-        # Give the preview stretch priority so it grows/shrinks while scrubber & controls keep minimal height
-        clip_preview_layout.addWidget(self.video_preview, stretch=1)
-        # Clip-specific scrubber
-        try:
-            from ..timeline import TimelineWidget as TimelineWidget
-
-            self.clip_scrub_label = QLabel("Clip Scrubber")
-            self.clip_scrub_label.setStyleSheet(
-                "color:#bbb;font-size:11px;padding:2px 4px;"
-            )
-            clip_preview_layout.addWidget(self.clip_scrub_label)
-            self.clip_scrub = TimelineWidget()
-            clip_preview_layout.addWidget(self.clip_scrub)
-        except Exception as e:
-            self.clip_scrub = None
-            clip_preview_layout.addWidget(QLabel(f"Clip scrub unavailable: {e}"))
-        # Controls row (play/pause etc.)
+        # --- Clip Preview Panel (middle) ---
+        self.clip_panel = ClipPreviewPanel(self)
+        # Controls row (play/pause etc.) appended beneath panel for now
+        controls_container = QWidget()
         controls_layout = QHBoxLayout()
+        controls_layout.setContentsMargins(0, 0, 0, 0)
         self.play_btn = QPushButton("Play")
         self.pause_btn = QPushButton("Pause")
         self.trim_btn = QPushButton("Trim")
@@ -219,29 +196,35 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(self.pause_btn)
         controls_layout.addWidget(self.trim_btn)
         controls_layout.addWidget(self.cut_btn)
-        clip_preview_layout.addLayout(controls_layout)
-        clip_preview_container.setLayout(clip_preview_layout)
-        top_splitter.addWidget(clip_preview_container)
+        controls_container.setLayout(controls_layout)
+        clip_preview_wrapper = QWidget()
+        clip_preview_wrapper_layout = QVBoxLayout()
+        clip_preview_wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        clip_preview_wrapper_layout.addWidget(self.clip_panel, stretch=1)
+        clip_preview_wrapper_layout.addWidget(controls_container)
+        clip_preview_wrapper.setLayout(clip_preview_wrapper_layout)
+        top_splitter.addWidget(clip_preview_wrapper)
 
-        # Backward compatibility aliases for tests expecting legacy names
-        # (controller & scrub). Keep these after constructing clip preview pieces.
-        self.controller = self.clip_controller  # legacy alias
-        self.scrub = getattr(self, "clip_scrub", None)  # legacy alias
+        # Direct references for convenience (avoid legacy alias names)
+        self.clip_controller = self.clip_panel.controller
+        self.video_preview = self.clip_panel.preview
+        self.clip_scrub = self.clip_panel.scrubber
 
-        # --- Project Preview (right) ---
-        # Placeholder project controller (blank until project assembly)
-        self.project_controller = VideoPlaybackController(self)
-        self.project_preview = ProjectPreviewWidget(self.project_controller)
-        self.project_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        project_preview_container = QWidget()
-        project_preview_layout = QVBoxLayout()
-        project_preview_layout.setContentsMargins(0, 0, 0, 0)
-        project_preview_layout.addWidget(self.project_preview, stretch=1)
-        project_preview_layout.addWidget(QLabel("Project Preview (placeholder)"))
-        project_preview_container.setLayout(project_preview_layout)
-        top_splitter.addWidget(project_preview_container)
+        # --- Project Preview Panel (right) ---
+        self.project_panel = ProjectPreviewPanel(self)
+        # Provide placeholder label below project panel
+        proj_placeholder_container = QWidget()
+        proj_placeholder_layout = QVBoxLayout()
+        proj_placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        proj_placeholder_layout.addWidget(self.project_panel, stretch=1)
+        proj_placeholder_layout.addWidget(QLabel("Project Preview (placeholder)"))
+        proj_placeholder_container.setLayout(proj_placeholder_layout)
+        top_splitter.addWidget(proj_placeholder_container)
+        self.project_controller = self.project_panel.controller
+        self.project_preview = self.project_panel.preview
+        self.project_scrub = self.project_panel.scrubber
 
-        # Bottom: timeline area (multi-track placeholder)
+        # Bottom: multi-track composition placeholder area
         bottom_container = QWidget()
         bottom_layout = QVBoxLayout()
         bottom_layout.setContentsMargins(0, 0, 0, 0)
@@ -292,11 +275,8 @@ class MainWindow(QMainWindow):
         # Clip bin selection -> load into clip preview controller
         self.clip_bin.currentTextChanged.connect(self._onClipBinSelectionChanged)
 
-        # Legacy scrub (if created earlier under name clip_scrub)
-        if getattr(self, "clip_scrub", None) is not None:
-            self.clip_scrub.positionChanged.connect(
-                lambda t: self.clip_controller.seek(t)
-            )
+        # Scrubber wiring & shortcuts (terminology updated)
+        if self.clip_scrub is not None:
             self.clip_scrub.seekRequested.connect(self._commitScrubSeek)
             try:
                 self.clip_scrub.dragStarted.connect(self._onScrubDragStarted)
@@ -308,8 +288,6 @@ class MainWindow(QMainWindow):
                 self.clip_scrub.thumbnailsBusy.connect(self._onThumbsBusy)
             except Exception:
                 pass
-            self.clip_controller.positionChanged.connect(self.clip_scrub.setPosition)
-            # Shortcuts for clip in/out points
             from PySide6.QtGui import QShortcut, QKeySequence
 
             QShortcut(QKeySequence("I"), self, activated=self.clip_scrub.setInPoint)

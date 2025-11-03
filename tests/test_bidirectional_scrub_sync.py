@@ -20,24 +20,24 @@ def test_scrub_pause_resume(tmp_path):
     clip.close()
     win = MainWindow()
     win.loadMediaPath(str(path))
-    win.controller.play()
+    win.clip_controller.play()
     # Let a few frames play
     loop = QEventLoop()
     QTimer.singleShot(120, loop.quit)
     loop.exec()
-    pre_drag_pos = win.controller.position()
+    pre_drag_pos = win.clip_controller.position()
     assert pre_drag_pos > 0
     # Simulate drag start
-    win.scrub.dragStarted.emit()
-    assert not win.controller._state.playing
+    win.clip_scrub.dragStarted.emit()
+    assert not win.clip_controller._state.playing
     # Change position mid-drag
-    new_t = min(pre_drag_pos + 0.1, win.controller._state.duration - 0.01)
-    win.scrub.positionChanged.emit(new_t)
+    new_t = min(pre_drag_pos + 0.1, win.clip_controller._state.duration - 0.01)
+    win.clip_scrub.positionChanged.emit(new_t)
     # End drag (seek commit and resume)
-    win.scrub.seekRequested.emit(new_t)
-    win.scrub.dragEnded.emit()
+    win.clip_scrub.seekRequested.emit(new_t)
+    win.clip_scrub.dragEnded.emit()
     # Allow resume and a couple more frames
     loop2 = QEventLoop()
     QTimer.singleShot(140, loop2.quit)
     loop2.exec()
-    assert win.controller.position() > new_t
+    assert win.clip_controller.position() > new_t
