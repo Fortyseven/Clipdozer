@@ -47,6 +47,9 @@ Concise guide for AI agents contributing to this repo. Focus on CURRENT patterns
 - Directly accessing `VideoFileClip.get_frame` in UI threads without mutex (wrap with `ClipAdapter`).
 - Adding logic to legacy `timeline.py` that should live in `services/media_generation.py` or `media/playback.py`.
 
+## Legacy / Transitional Code Policy
+Early project stage: Do NOT add or preserve legacy alias names (e.g., `controller`, `scrub`, shim re-exports). Once a refactor lands, remove transitional code in the same PR unless tests explicitly require it. Prefer direct, descriptive attribute names (`clip_controller`, `clip_scrub`, `project_panel`). Avoid backward compatibility layers; prioritize clarity and minimal surface area.
+
 ## Example Integration Snippets
 ```python
 # Load clip & start playback
@@ -64,3 +67,22 @@ thread.start()
 
 ## When Unsure
 Prefer extending existing abstractions rather than introducing parallel ones. Reference similar patterns before creating new modules. Keep instruction comments concise and colocated where behavior is non-obvious (e.g., mutex usage, generation id checks).
+
+# Terminology and Concepts
+- Clip: a loaded video file optionally with audio
+- Preview Panel: a UI component that displays a Clip; the panel has a Scrubber
+- Scrubber:
+    - a reusable UI component that allows a user to scrub through the video
+    - a scrubber includes, at minimum, a slider to scrub through the frames of the video, and a status bar that shows what frame/time offset into the video the Scrubber is at.
+    - Optional functionality:
+        - the ability to mark in/out positions (this will also add to the status bar, the in/out time offsets)
+        - video frame thumbnails (toggleable)
+        - the audio waveform (toggleable)
+
+- Clip Preview Panel: a video player with a Scrubber component (with thumbnails and audio waveform)
+- Project Preview Panel: a video player with a Scrubber component (without thumbnail/audio)
+
+Guidelines:
+- Use `ClipPreviewPanel` / `ProjectPreviewPanel`; do not manually compose playback + preview + scrubber.
+- Implement new features using services or core models; avoid embedding logic into UI widgets.
+- Remove any leftover transitional constructs immediately (no long-term shims).
