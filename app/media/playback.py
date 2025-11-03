@@ -24,6 +24,16 @@ An optional VideoPreviewWidget listens to frameReady and converts to QPixmap.
 
 Threading: We keep a precise QTimer loop (interval derived from fps) similar to previous logic; we
 monitor wall clock elapsed to reduce drift. Future improvement: move to a dedicated worker thread.
+
+Frame Skipping:
+To maintain real-time playback under UI load, the controller can skip frames. When
+``frame_skip`` is enabled (default for preview usage), each timer tick computes the
+desired frame index from wall-clock elapsed time since play start. If decoding or
+UI rendering lags, intermediate frames are dropped and playback jumps forward to
+the desired index. This keeps audio/video sync closer and preserves perceptual
+smoothness at the cost of not displaying every decoded frame. Disable via
+``set_frame_skipping(False)`` for frame-exact stepping scenarios (e.g., export
+or debugging).
 """
 
 from __future__ import annotations
@@ -61,7 +71,13 @@ class VideoPlaybackController(QObject):
     stateChanged = Signal(str)
     clipLoaded = Signal(float)  # duration
 
-    def __init__(self, parent: Optional[QObject] = None):
+    def __init__(
+        self,
+        parent: Optional[QObject] = None,
+        *,
+        frame_skip: bool = True,
+        sync_threshold_frames: int = 2,
+    ):
         super().__init__(parent)
         self._clip_adapter: Optional[ClipAdapter] = None
         self._state = PlaybackState()
@@ -72,7 +88,20 @@ class VideoPlaybackController(QObject):
             pass
         self._timer.timeout.connect(self._tick)
         self._play_start_time: Optional[float] = None
-        self._sync_threshold_frames = 2
+        # When enabled we may skip frames to keep real-time pace.
+        self._frame_skip_enabled = frame_skip
+        # Legacy threshold guard used for coarse drift correction if frame_skip disabled.
+        self._sync_threshold_frames = sync_threshold_frames
+
+    # Configuration API
+    def set_frame_skipping(self, enabled: bool):
+        """Enable or disable frame skipping during playback.
+
+        When enabled, the controller uses wall-clock elapsed time to jump
+        directly to the desired frame index, potentially dropping intermediate
+        frames for smoother real-time preview.
+        """
+        self._frame_skip_enabled = enabled
 
     # Public API
     def load(self, source: Union[str, ClipAdapter, "VideoFileClip"]):
@@ -156,27 +185,36 @@ class VideoPlaybackController(QObject):
             self._timer.stop()
             return
         fps = self._state.fps or 24.0
-        # Use wall clock to derive desired frame to reduce drift instead of purely incrementing.
+        # Derive target frame using wall clock to keep pace; optionally skip frames.
         try:
             from time import perf_counter
 
+            target_index = self._state.current_frame + 1  # default linear advance
             if self._play_start_time is not None:
                 elapsed = perf_counter() - self._play_start_time
                 desired = int(elapsed * fps)
-                # Clamp and only jump forward if we're noticeably behind (skip frames)
-                if desired >= self._state.total_frames:
-                    self.stop()
-                    return
-                if desired - self._state.current_frame > self._sync_threshold_frames:
-                    self._state.current_frame = desired
+                if self._frame_skip_enabled:
+                    # Jump directly to desired frame if ahead of linear progression.
+                    if desired > self._state.current_frame:
+                        target_index = desired
+                else:
+                    # Only coarse resync if far behind.
+                    if (
+                        desired - self._state.current_frame
+                        > self._sync_threshold_frames
+                    ):
+                        target_index = desired
+            if target_index >= self._state.total_frames:
+                self.stop()
+                return
+            self._state.current_frame = target_index
         except Exception:
-            pass
-        # Normal progressive advance (acts as fallback and ensures steady position update)
-        next_index = self._state.current_frame + 1
-        if next_index >= self._state.total_frames:
-            self.stop()
-            return
-        self._state.current_frame = next_index
+            # Fallback linear advance if timing fails.
+            next_index = self._state.current_frame + 1
+            if next_index >= self._state.total_frames:
+                self.stop()
+                return
+            self._state.current_frame = next_index
         self._emit_current_frame()
         self.positionChanged.emit(self.position())
 
@@ -192,6 +230,13 @@ class VideoPreviewWidget(QLabel):
         # Cache last raw frame so we can rescale on widget resize without waiting
         # for the next decoded frame.
         self._last_frame = None
+        # Scaling mode: 'smooth' uses Qt.SmoothTransformation, 'fast' uses Qt.FastTransformation.
+        self._scaling_mode = "smooth"
+
+    def setScalingMode(self, mode: str):
+        """Set scaling mode: 'smooth' (default) or 'fast'."""
+        if mode in ("smooth", "fast"):
+            self._scaling_mode = mode
 
     # --- Rendering helpers ---
     def _renderFrame(self):
@@ -200,9 +245,11 @@ class VideoPreviewWidget(QLabel):
         if frame is None:
             return
         try:
-            from PIL import Image
-            from io import BytesIO
+            import numpy as np
+            from PySide6.QtGui import QImage
 
+            if frame.ndim == 2:  # grayscale -> expand to RGB for consistency
+                frame = np.stack([frame] * 3, axis=-1)
             h, w = frame.shape[0], frame.shape[1]
             target_w = self.width()
             target_h = self.height()
@@ -215,14 +262,19 @@ class VideoPreviewWidget(QLabel):
             else:
                 new_w = target_w
                 new_h = int(new_w / aspect) if aspect else target_h
-            image = Image.fromarray(frame).convert("RGB").resize((new_w, new_h))
-            buffer = BytesIO()
-            image.save(buffer, format="PNG")
-            buffer.seek(0)
-            pix = QPixmap()
-            if pix.loadFromData(buffer.read()):
-                self.setPixmap(pix)
-                self.setText("")
+            # Construct QImage directly from numpy buffer (assumed uint8 RGB)
+            # Each row is w * 3 bytes.
+            bytes_per_line = w * 3
+            qimg = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            transform_flag = (
+                Qt.SmoothTransformation
+                if self._scaling_mode == "smooth"
+                else Qt.FastTransformation
+            )
+            scaled = qimg.scaled(new_w, new_h, Qt.KeepAspectRatio, transform_flag)
+            pix = QPixmap.fromImage(scaled)
+            self.setPixmap(pix)
+            self.setText("")
         except Exception as e:  # pragma: no cover
             self.setText(f"Frame err: {e}")
 
