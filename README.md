@@ -5,14 +5,14 @@ Lightweight desktop editor for short-form portrait video clips.
 
 ## Features (early prototype)
 * Import local video files (mp4, mov, avi)
-* Preview first frame and basic playback (Play/Pause) using MoviePy 2.x
+* Preview first frame and basic playback (single Play/Pause toggle) using MoviePy 2.x
 * Aspect-ratio aware scaling in preview
 * Scrub bar for random access seeking
 * In/Out point marking (context menu on scrub bar or use shortcuts I / O, shift+I / shift+O to clear)
 * Visual timeline with highlighted In/Out region and generated frame thumbnails (auto on import)
 	* Thumbnails now generated asynchronously; they will refine shortly after import.
 	* Resizing the window triggers a debounced regeneration sized to available width.
-* Audio playback synchronized with video scrubbing (basic play/pause/seek, looping)
+* Audio playback synchronized with video scrubbing (play/pause toggle, frame stepping, looping planned)
 
 ## Requirements
 * Python 3.11+
@@ -34,11 +34,14 @@ uv run python main.py
 ```
 
 While running:
-* Press I to set the In point at current playhead.
-* Press O to set the Out point.
-* Shift+I / Shift+O clear respective markers.
-* Right-click the scrub bar for a context menu offering the same actions.
-* Resizing the window will regenerate timeline thumbnails after a short delay.
+* Use the integrated scrubber transport (in Clip Preview Panel):
+	* ⟲ steps back one frame
+	* ▶ / ❚❚ toggles play / pause
+	* ⟳ steps forward one frame
+	* I marks In, O marks Out
+* Keyboard shortcuts: I (mark In), O (mark Out), Shift+I / Shift+O to clear.
+* Right-click the scrub bar for a context menu offering the same marker actions.
+* Resizing the window regenerates timeline thumbnails after a short delay.
 
 ## MoviePy 2.x Import Change
 MoviePy 2.x removed the legacy aggregator module `moviepy.editor`. Import core classes directly:
@@ -63,7 +66,7 @@ uv run pytest tests/test_video_import.py -q
 Previous ad-hoc root-level test scripts have been consolidated into the suite.
 
 ## Roadmap (short-term)
-* Timeline editing (trim/cut operations)
+* Timeline editing (trim/cut operations) – legacy buttons removed; logic pending implementation
 * In/Out point marking & range-based operations
 * Audio track integration
 * Whisper-based caption generation
@@ -85,6 +88,7 @@ app/
 
 Key components:
 * `ScrubberWidget` (`app/ui/components/scrubber.py`) – navigation, markers, thumbnails, waveform.
+* `ScrubberWidget` (`app/ui/components/scrubber.py`) – navigation, markers, thumbnails, waveform + optional transport buttons.
 * `ClipPreviewPanel` / `ProjectPreviewPanel` – composed preview + scrubber containers.
 * `VideoPlaybackController` & `VideoPreviewWidget` – playback abstraction and frame display.
 * `format_time` utility – canonical time formatting in `app/utils/timefmt.py`.
@@ -142,6 +146,7 @@ Behavior:
 * Project preview and project scrubber remain idle (duration zero) until project assembly logic is implemented.
 * In/Out shortcuts (I/O and Shift+I / Shift+O) operate on the clip scrubber only.
 * Clip Scrubber and Project Scrubber are visually labeled; seeking one does not change the other's position.
+* Clip Scrubber and Project Scrubber are visually labeled; seeking one does not change the other's position. Clip scrubber includes transport; project scrubber omits it.
 * A test (`tests/test_dual_scrub_independence.py`) asserts that clip scrub movement leaves project scrub at 0 when project is blank.
 
 This scaffolding separates source clip manipulation from future project-level timeline editing.

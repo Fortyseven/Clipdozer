@@ -12,9 +12,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
     QVBoxLayout,
-    QHBoxLayout,
     QListWidget,
-    QPushButton,
     QMessageBox,
     QFileDialog,
     QStatusBar,
@@ -182,28 +180,9 @@ class MainWindow(QMainWindow):
         # Clip bin holds imported source clips.
         top_splitter.addWidget(self.clip_bin)
 
-        # --- Clip Preview Panel (middle) ---
+        # --- Clip Preview Panel (middle) --- (integrated transport in its scrubber)
         self.clip_panel = ClipPreviewPanel(self)
-        # Controls row (play/pause etc.) appended beneath panel for now
-        controls_container = QWidget()
-        controls_layout = QHBoxLayout()
-        controls_layout.setContentsMargins(0, 0, 0, 0)
-        self.play_btn = QPushButton("Play")
-        self.pause_btn = QPushButton("Pause")
-        self.trim_btn = QPushButton("Trim")
-        self.cut_btn = QPushButton("Cut")
-        controls_layout.addWidget(self.play_btn)
-        controls_layout.addWidget(self.pause_btn)
-        controls_layout.addWidget(self.trim_btn)
-        controls_layout.addWidget(self.cut_btn)
-        controls_container.setLayout(controls_layout)
-        clip_preview_wrapper = QWidget()
-        clip_preview_wrapper_layout = QVBoxLayout()
-        clip_preview_wrapper_layout.setContentsMargins(0, 0, 0, 0)
-        clip_preview_wrapper_layout.addWidget(self.clip_panel, stretch=1)
-        clip_preview_wrapper_layout.addWidget(controls_container)
-        clip_preview_wrapper.setLayout(clip_preview_wrapper_layout)
-        top_splitter.addWidget(clip_preview_wrapper)
+        top_splitter.addWidget(self.clip_panel)
 
         # Direct references for convenience (avoid legacy alias names)
         self.clip_controller = self.clip_panel.controller
@@ -266,8 +245,6 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         # Connections
-        self.play_btn.clicked.connect(self.clip_controller.play)
-        self.pause_btn.clicked.connect(self.clip_controller.pause)
         self.clip = None
         self._imported_clips: dict[str, str] = {}
 
@@ -398,6 +375,11 @@ class MainWindow(QMainWindow):
 
     # --- Audio / controller synchronization ---
     def _onPlaybackState(self, state: str):
+        # Delegate play button visual update to scrubber integrated controls
+        try:
+            self.clip_scrub.updatePlayButton(state == "playing")
+        except Exception:
+            pass
         if not hasattr(self, "media_player"):
             return
         mp = self.media_player

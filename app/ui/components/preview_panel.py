@@ -54,7 +54,8 @@ class BasePreviewPanel(QWidget):
         super().__init__(parent)
         self.controller = VideoPlaybackController(self)
         self.preview = VideoPreviewWidget(self.controller)
-        self.scrubber = ScrubberWidget()
+        # Transport visibility decided by subclass; default hide (project panel) unless overridden
+        self.scrubber = ScrubberWidget(show_transport=False)
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         if label:
@@ -90,9 +91,51 @@ class BasePreviewPanel(QWidget):
 
 class ClipPreviewPanel(BasePreviewPanel):
     def __init__(self, parent=None):
+        # Rebuild base with transport visible
         super().__init__(
             parent, show_thumbnails=True, show_waveform=True, label="Clip Preview"
         )
+        # Replace scrubber with one that has transport visible
+        layout = self.layout()
+        if layout is not None:
+            # Remove old scrubber widget
+            layout.removeWidget(self.scrubber)
+            self.scrubber.deleteLater()
+            self.scrubber = ScrubberWidget(show_transport=True)
+            layout.addWidget(self.scrubber)
+        # Re-wire required signals after replacement
+        self.scrubber.positionChanged.connect(
+            lambda t: self.controller.seek(t, emit_frame=True)
+        )
+        self.controller.positionChanged.connect(self.scrubber.setPosition)
+        # Wire transport actions to playback controller
+        self.scrubber.playToggled.connect(self._onPlayToggle)
+        self.scrubber.frameStep.connect(self._onFrameStep)
+        # Update play button when controller state changes
+        self.controller.stateChanged.connect(self._updatePlayButton)
+
+    def _onPlayToggle(self):
+        playing = getattr(getattr(self.controller, "_state", None), "playing", False)
+        if playing:
+            self.controller.pause()
+        else:
+            self.controller.play()
+
+    def _onFrameStep(self, delta: int):
+        # Pause if currently playing
+        if getattr(getattr(self.controller, "_state", None), "playing", False):
+            self.controller.pause()
+        fps = getattr(getattr(self.controller, "_state", None), "fps", 24.0) or 24.0
+        cur_t = self.controller.position()
+        new_t = max(0.0, cur_t + (delta / fps))
+        duration = getattr(getattr(self.controller, "_state", None), "duration", None)
+        if duration is not None:
+            new_t = min(new_t, duration)
+        self.controller.seek(new_t)
+        self.scrubber.setPosition(new_t)
+
+    def _updatePlayButton(self, state: str):
+        self.scrubber.updatePlayButton(state == "playing")
 
 
 class ProjectPreviewPanel(BasePreviewPanel):
