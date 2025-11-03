@@ -217,7 +217,6 @@ class MainWindow(QMainWindow):
         proj_placeholder_layout = QVBoxLayout()
         proj_placeholder_layout.setContentsMargins(0, 0, 0, 0)
         proj_placeholder_layout.addWidget(self.project_panel, stretch=1)
-        proj_placeholder_layout.addWidget(QLabel("Project Preview (placeholder)"))
         proj_placeholder_container.setLayout(proj_placeholder_layout)
         top_splitter.addWidget(proj_placeholder_container)
         self.project_controller = self.project_panel.controller
