@@ -43,7 +43,8 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, Signal, QTimer, Qt
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QLabel
+from PySide6.QtWidgets import QLabel, QSizePolicy
+from PySide6.QtCore import QSize
 
 try:  # MoviePy import compat
     from moviepy import VideoFileClip
@@ -232,6 +233,24 @@ class VideoPreviewWidget(QLabel):
         self._last_frame = None
         # Scaling mode: 'smooth' uses Qt.SmoothTransformation, 'fast' uses Qt.FastTransformation.
         self._scaling_mode = "fast"
+        # --- Scaling / size policy notes ---
+        # Bug fix: Previously the preview would upscale to fill available space but
+        # refuse to shrink when the window/layout contracted. This occurred because
+        # QLabel's default size policy uses the pixmap dimensions as a preferred
+        # size hint; once a large QPixmap is set, layouts will not shrink the label
+        # below that size. By marking both dimensions as Ignored we allow the layout
+        # to freely resize the widget smaller, and our resizeEvent will rescale the
+        # cached frame appropriately.
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+
+    def sizeHint(self):  # type: ignore[override]
+        """Return a modest default hint independent of last pixmap size.
+
+        Using a fixed small hint prevents the previous large frame from locking
+        the layout into a large minimum. The layout may still expand the widget,
+        but it can now contract freely.
+        """
+        return QSize(160, 90)
 
     def setScalingMode(self, mode: str):
         """Set scaling mode: 'smooth' (default) or 'fast'."""

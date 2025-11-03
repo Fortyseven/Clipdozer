@@ -1,3 +1,13 @@
+## Development Notes
+*More notes coming soon.*
+
+### Preview Scaling Behavior
+The video preview widget (`VideoPreviewWidget`) intentionally uses a size policy of
+`QSizePolicy.Ignored` for both width and height and a small fixed `sizeHint`. This
+ensures that after the preview expands to a large window size it can still shrink
+when the window/layout contracts. Prior behavior (default label size policy) caused
+the preview to get "stuck" at the last large pixmap dimensions. The widget now
+rescales its cached last frame on every resize event.
 Clipdozer
 =========
 
