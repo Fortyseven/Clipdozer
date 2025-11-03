@@ -231,7 +231,7 @@ class VideoPreviewWidget(QLabel):
         # for the next decoded frame.
         self._last_frame = None
         # Scaling mode: 'smooth' uses Qt.SmoothTransformation, 'fast' uses Qt.FastTransformation.
-        self._scaling_mode = "smooth"
+        self._scaling_mode = "fast"
 
     def setScalingMode(self, mode: str):
         """Set scaling mode: 'smooth' (default) or 'fast'."""
